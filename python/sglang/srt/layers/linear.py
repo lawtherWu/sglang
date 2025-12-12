@@ -11,6 +11,7 @@ from torch.nn.parameter import Parameter, UninitializedParameter
 
 from sglang.srt.distributed import (
     divide,
+    get_o_proj_data_parallel_world_size,
     get_tensor_model_parallel_rank,
     get_tensor_model_parallel_world_size,
     get_tp_group,
@@ -34,6 +35,7 @@ from sglang.srt.layers.parameter import (
 from sglang.srt.layers.quantization.unquant import UnquantizedLinearMethod
 from sglang.srt.layers.utils import pad_or_narrow_weight
 from sglang.srt.utils import get_bool_env_var, is_cpu, is_hip, is_npu, set_weight_attrs
+from sglang.srt.utils.common import get_int_env_var
 
 if TYPE_CHECKING:
     from sglang.srt.layers.quantization.base_config import (
@@ -1248,6 +1250,7 @@ class RowParallelLinear(LinearBase):
         prefix: str = "",
         tp_rank: Optional[int] = None,
         tp_size: Optional[int] = None,
+        attn_tp_size: Optional[int] = None,
         use_presharded_weights: bool = False,
     ):
         quant_config = None if _disable_hip_linear_quant else quant_config
@@ -1264,7 +1267,9 @@ class RowParallelLinear(LinearBase):
         if tp_size is None:
             tp_size = get_tensor_model_parallel_world_size()
         self.tp_rank, self.tp_size = tp_rank, tp_size
+        self.attn_tp_size = attn_tp_size if attn_tp_size else tp_size
         self.input_size_per_partition = divide(input_size, self.tp_size)
+        self.prefix = prefix
         assert self.quant_method is not None
         self.use_presharded_weights = use_presharded_weights
 
@@ -1314,10 +1319,26 @@ class RowParallelLinear(LinearBase):
         param_data = param.data
         # bitsandbytes loads the weights of the specific portion
         # no need to narrow here
+        process_tp_dp_weight = False
+        if (
+            get_int_env_var("O_PROJ_TP_SIZE") > 1
+            and self.attn_tp_size != 1
+            and "o_proj" in self.prefix
+        ):
+            process_tp_dp_weight = True
+            rank_list = (
+                torch.arange(torch.distributed.get_world_size())
+                .reshape(-1, self.tp_size)
+                .T
+            )
+            o_proj_dp_size = get_o_proj_data_parallel_world_size()
+            assert o_proj_dp_size > 1
+
         if (
             input_dim is not None
             and not use_bitsandbytes_4bit
             and not self.use_presharded_weights
+            and not process_tp_dp_weight
         ):
             shard_size = param_data.shape[input_dim]
             start_idx = self.tp_rank * shard_size
@@ -1347,6 +1368,19 @@ class RowParallelLinear(LinearBase):
                         input_dim, start_idx, shard_size
                     )
 
+        if (
+            input_dim is not None
+            and not use_bitsandbytes_4bit
+            and not self.use_presharded_weights
+            and process_tp_dp_weight
+        ):
+            shard_size = param_data.shape[input_dim] // o_proj_dp_size
+            res = []
+            for rank in rank_list[self.tp_rank]:
+                start_idx = rank * shard_size
+                tmp_weight = loaded_weight.narrow(input_dim, start_idx, shard_size)
+                res.append(tmp_weight)
+            loaded_weight = torch.cat(res, dim=input_dim)
         # Special case for loading scales off disk, which often do not
         # have a shape (such as in the case of AutoFP8).
         if len(loaded_weight.shape) == 0:
