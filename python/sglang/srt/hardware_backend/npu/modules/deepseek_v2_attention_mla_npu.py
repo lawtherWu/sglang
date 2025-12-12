@@ -242,6 +242,7 @@ def forward_mla_core_npu(
         m.w_vc,
         out=attn_bmm_output.view(-1, m.num_local_heads, m.v_head_dim).transpose(0, 1),
     )
+
     output, _ = m.o_proj(attn_bmm_output)
 
     return output
@@ -396,8 +397,7 @@ def forward_dsa_core_npu(
         attn_output = attn_output.contiguous()
         torch.ops.npu.batch_matmul_transpose(attn_output, m.w_vc, attn_bmm_output)
 
-    attn_bmm_output = attn_bmm_output.reshape(-1, m.num_local_heads * m.v_head_dim)
-
+    attn_bmm_output = m.before_o_proj.prepare_o_proj(attn_bmm_output, forward_batch)
     output, _ = m.o_proj(attn_bmm_output)
     return output
 

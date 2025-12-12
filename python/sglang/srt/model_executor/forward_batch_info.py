@@ -384,6 +384,8 @@ class ForwardBatch:
     # Record the split metadata of the sequence number of NSA context parallels.
     nsa_cp_metadata: Optional[NSAContextParallelMetadata] = None
 
+    batch_size_max_across_dp: Optional[int] = None
+
     @classmethod
     def init_new(
         cls,
@@ -426,6 +428,9 @@ class ForwardBatch:
             dimensions=batch.dimensions,
         )
         device = model_runner.device
+
+        if batch.batch_size_max_across_dp is not None:
+            ret_batch_size_max_across_dp = batch.batch_size_max_across_dp
 
         if batch.extend_input_logprob_token_ids is not None:
             ret.extend_input_logprob_token_ids_gpu = (

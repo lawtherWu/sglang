@@ -35,6 +35,7 @@ from torch.cuda import Stream as CudaStream
 from torch.cuda import StreamContext as CudaStreamContext
 from torch.distributed import barrier
 
+from python.sglang.srt.layers.communicator import get_max_bs_across_dp
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.constrained.base_grammar_backend import (
     INVALID_GRAMMAR_OBJ,
@@ -63,7 +64,11 @@ from sglang.srt.distributed import get_pp_group, get_world_group
 from sglang.srt.dllm.config import DllmConfig
 from sglang.srt.environ import envs
 from sglang.srt.eplb.expert_distribution import get_global_expert_distribution_recorder
-from sglang.srt.layers.dp_attention import compute_dp_attention_world_info
+from sglang.srt.layers.dp_attention import (
+    compute_dp_attention_world_info,
+    get_attention_dp_rank,
+    get_attention_dp_size,
+)
 from sglang.srt.layers.moe import initialize_moe_config
 from sglang.srt.layers.quantization.fp8_utils import initialize_fp8_gemm_config
 from sglang.srt.managers.io_struct import (
@@ -2006,6 +2011,7 @@ class Scheduler(
                     model_worker_batch.sampling_info.copy_for_forward()
                 )
 
+                get_max_bs_across_dp(model_worker_batch)
                 bs = len(model_worker_batch.seq_lens)
                 future_indices = self.future_map.alloc_future_indices(bs)
 
